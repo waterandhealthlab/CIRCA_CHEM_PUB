@@ -1,0 +1,255 @@
+---
+title: "CIRCA CHEM"
+date: "07/04/2021"
+output:
+  html_document: default
+  word_document: default
+editor_options:
+  chunk_output_type: console
+---
+
+```{r, include=FALSE}
+library(rmarkdown)   # Dynamic Documents for R
+library(tidyverse)   # A collection of R packages designed for data science
+library(magrittr)    # A Forward-Pipe Operator for R
+
+library(knitr)       # A General-Purpose Package for Dynamic Report Generation in R
+library(readxl)      # Makes it easy to get data out of Excel and into R
+library(glue)        # Interpreted String Literals
+
+library(tidymodels)  # A collection of R packages designed for data science
+library(lmerTest)    # Tests in Linear Mixed Effects Models
+library(broom.mixed)  # Enhancements for 'broom' and 'easystats' Package Families
+
+library(sjPlot)      # Collection of plotting and table output functions for data visualization
+library(ggpubr)      # ‘ggplot2’ Based Publication Ready Plots
+library(glue)
+
+library(plyr)
+
+
+library(conflicted)  # An Alternative Conflict Resolution Strategy
+conflict_prefer("filter", "dplyr")
+conflict_prefer("lmer", "lmerTest")
+conflict_prefer("mutate", "dplyr")
+conflict_prefer("arrange", "dplyr")
+conflict_prefer("summarise", "dplyr")
+conflict_prefer("rename", "dplyr")
+
+knitr::opts_chunk$set(echo=FALSE,results="asis",message = FALSE)
+```
+
+```{r load-data}
+questionnaire <- read_xlsx("data_files/Copy of CIRCA CHEM_Participants Registry_29.12.20_2.xlsx")
+
+oxidative_stress <- read_xlsx("data_files/4HNE CIRCACHEM RESULTS_v2.xlsx")
+
+pesticides <- read_xlsx("data_files/3PBA-6CN Creatinine CIRCACHEM Final.xlsx") %>% 
+  select(Code:`3PBA (μg/L)`) %>%
+  suppressMessages()
+
+metabolomics <- read_xlsx("data_files/Results_COS_P21155_CIRCA-CHEM.xlsx",sheet="ConcNMR") %>%
+  suppressMessages()
+```
+
+
+```{r extract-information-from-sample-name}
+#Get ID of participant
+#Get group of participant
+#Get sample number of participant
+metabolomics %<>% rename(Code=`Sample Label COS vs Metabolites (mM Concentration)`)
+metabolomics %<>% rename(Sample_Name=`Sample_Name CUT`)
+
+metabolomics %<>% mutate(ID=as_factor(as.numeric(str_match(Sample_Name,"\\d++"))),
+                 Group=str_match(Sample_Name,"A|B"),
+                 Sample=as.numeric(str_match(Sample_Name,"\\d$")),
+                 .before=Sample_Name)
+```
+
+```{r renames-and-merges}
+# Use the mean of the 2 trigonelline metabolites
+metabolomics %<>% 
+  rowwise() %>%
+  mutate(Trigonelline=mean(c(Trigonelline...25,Trigonelline...33)),
+         .after=Trigonelline...25) %>% select(!contains("Trigonelline...")) %>%
+  ungroup() %>%
+  rename(`2-Methyl-3-Keto valeric acid`=`2-Mehtyl-3-Keto valeric acid`)
+
+# renames
+pesticides %<>% rename("6CN"=`6CN (μg/L)`,"3PBA"=`3PBA (μg/L)`)
+oxidative_stress %<>% rename("4HNE"=`μg/L`)
+```
+
+```{r the-groups-as-one}
+# although there are two groups of participants, we modify their sample days accordingly to treat them as one
+
+# drop group
+metabolomics_wo_group <- metabolomics %>% mutate(Sample=if_else(Group=="B",
+                                if_else(Sample<5,Sample+4,Sample-4),
+                                Sample)) %>% select(!Group)
+
+# phase 
+metabolomics_wo_group %<>% mutate(Phase=if_else(Sample<5,"Morning","Evening"),.after=Sample)
+
+# days from treatment
+metabolomics_wo_group %<>% mutate(DaysFromTreatment=case_when(
+  Sample==1 ~ 1,
+  Sample==5 ~ 1,
+  Sample==2 ~ 3,
+  Sample==6 ~ 3,
+  Sample==3 ~ 5,
+  Sample==7 ~ 5,
+  Sample==4 ~ 8,
+  Sample==8 ~ 8),
+  .after=Phase) %>% select(!Sample)
+
+# factors
+metabolomics_wo_group %<>% arrange(ID) %>% mutate(ID=as_factor(ID),Phase=as_factor(Phase))
+
+rm(metabolomics)
+```
+
+```{r lod imputation}
+# replace lod values with lod/2 in 6CN
+pesticides %<>% mutate(`6CN`=if_else(`6CN`<0.075,0.075/2,`6CN`))
+```
+
+```{r questionnaire}
+questionnaire %<>% 
+  transmute(ID = as_factor(`ID (CC-)`), Age=`Ηλικία/ Age`, Sex = as_factor(`Φύλο/ Gender`), Bmi = `ΒΜΙ_0`) %>% 
+  drop_na(ID)
+
+metabolomics_wo_group <- questionnaire %>% right_join(metabolomics_wo_group, by="ID")
+rm(questionnaire)
+```
+
+```{r descriptives}
+cat("## Descriptives of metabolomics")
+temp <- metabolomics_wo_group %>% mutate(Phase="Overall")
+
+kable(metabolomics_wo_group %>%
+        bind_rows(temp) %>% 
+        pivot_longer(Valine:Uracil,names_to="uM/L",values_to="value") %>%
+        group_by(`uM/L`,Phase) %>%
+        summarise(
+          mean=round(mean(value,na.rm=TRUE),3),
+          sd=round(sd(value,na.rm=TRUE),3),
+          min=round(min(value,na.rm=TRUE),3),
+          q25=round(quantile(value,.25,na.rm=TRUE),3),
+          q50=round(quantile(value,.5 ,na.rm=TRUE),3),
+          q75=round(quantile(value,.75,na.rm=TRUE),3),
+          q90=round(quantile(value,.90,na.rm=TRUE),3),
+          q95=round(quantile(value,.95,na.rm=TRUE),3),
+          max=round(max(value,na.rm=TRUE),3),.groups="keep") %>%
+        suppressWarnings())
+
+rm(temp)
+```
+
+```{r model-data}
+# merge metabolites pesticides and oxidative stress
+model_data <- metabolomics_wo_group %>% 
+  left_join(pesticides,by=c("Sample_Name"="Code")) %>%
+  left_join(oxidative_stress,by=c("Sample_Name"="Sample code"))
+
+model_data %<>% mutate(across(Valine:`4HNE`,~scale(log(as.numeric(.)))[,])) %>% suppressWarnings()
+
+model_data %<>% mutate(across(c(Bmi,Age),~scale(as.numeric(.))[,])) %>% suppressWarnings()
+
+#Keep only baseline data
+baseline <- model_data %>% 
+  filter(DaysFromTreatment==1) %>% 
+  select(!c(DaysFromTreatment,Sample_Name,Bmi,Age,Sex,Code)) %>% 
+  pivot_longer(Valine:Uracil & !Creatinine,names_to="MetaboliteName",values_to="Metabolite")
+
+#Keep only treatment data,merge them with baseline, and nest them by metabolite
+model_data %<>% 
+  filter(DaysFromTreatment!=1) %>%
+  pivot_longer(Valine:Uracil & !Creatinine, names_to="MetaboliteName",values_to="Metabolite") %>%
+  left_join(baseline,by=c("ID","Phase","MetaboliteName"),suffix = c("","_BL")) %>%
+  nest_by(MetaboliteName)
+
+rm(baseline,metabolomics_wo_group,oxidative_stress,pesticides)
+```
+
+```{r choose-formula-function-and-formulas}
+# choose model based on p.value of interaction term
+choose_model <- function(formula_int,formula_no_int,data){
+  model_int <- tidy(lmer(formula_int, data=data),effects="fixed",conf.int =TRUE)
+  if (model_int$p.value[str_detect(model_int$term,":")]<0.05){
+    return (model_int %>% mutate(`Interaction Term`="Significant"))
+  }
+  else{
+    return(tidy(lmer(formula_no_int, data=data),effects="fixed",conf.int =TRUE) %>% mutate(`Interaction Term`="Not Significant"))
+  }
+}
+```
+
+```{r models-metabolomics}
+cat("## 1st set of Models - Metabolite ~ Metabolite baseline + Treatment + Creatinine + Age + Sex + BMI + DaysFromTreatment + Treatment*DaysFromTreatment (included if p.value <0.05) + (1 | ID) ")
+form_int <- Metabolite ~ Metabolite_BL + Phase + Creatinine + Age + Sex + Bmi + DaysFromTreatment + Phase*DaysFromTreatment + (1 | ID)
+form_no_int <- Metabolite ~ Metabolite_BL + Phase + Creatinine + Age + Sex + Bmi + DaysFromTreatment + (1 | ID)
+
+# run the model for every metabolite
+model <- model_data %>% summarise(choose_model(form_int,form_no_int,data),.groups="keep")  %>% ungroup() 
+
+# keep only phase term
+model %<>% filter(str_detect(term,"Phase"))  
+
+# define response and predictor
+model %<>% mutate(Response = MetaboliteName, Predictor = term)
+
+# p.adjust
+model %<>%
+  select(Response,Predictor,estimate,p.value,conf.low,conf.high,`Interaction Term`) %>% # select useful columns  
+  mutate(p.adjust = p.adjust(p.value,method="BH"),.after=p.value) #find padjust
+
+
+model %>% arrange(p.value) %>% kable(caption="Results")
+```
+
+```{r models-metabolomics-pest-ox}
+cat("## 2nd set of Models - 3-PBA/6-CN/4-HNE ~ 3-PBA/6-CN/4-HNE baseline + Metabolite + Creatinine + Age + Sex + BMI + DaysFromTreatment + (1 | ID)")
+model_formulas <- tibble(Response     = c("`3PBA`","`6CN`","`4HNE`"),
+                                              Predictors_1 = c("Metabolite + `3PBA_BL`","Metabolite + `6CN_BL`","Metabolite + `4HNE_BL`"),
+                                              Predictors_2 = "Creatinine + Age + Sex + Bmi + DaysFromTreatment",
+                                              Predictors_3 = "(1 | ID)")
+models <- list()
+
+for (i in 1:nrow(model_formulas)) {
+  # generate the formula with no interaction term
+  form_no_int <- as.formula(model_formulas %$% str_c(Response[i], " ~ ", Predictors_1[i], " + ", Predictors_2[i], " + ", Predictors_3[i]))
+  
+  # run the model for every metabolite
+  model <- model_data %>% summarise(tidy(lmer(form_no_int, data=data),effects="fixed",conf.int =TRUE))  %>% ungroup() 
+  
+  # keep only phase term for metabolites model and Metabolite for the rest
+  model %<>% filter(term=="Metabolite")  
+  
+  model %<>% mutate(Response = model_formulas[i,1] %>% str_remove_all("`"), Predictor = MetaboliteName)  
+
+  model %<>%
+    select(Response,Predictor,estimate,p.value,conf.low,conf.high) %>% # select useful columns  
+    mutate(p.adjust = p.adjust(p.value,method="BH"),.after=p.value) #find padjust
+  
+  # add the output to a model list  
+  models[[i]] <- model
+  
+}
+bind_rows(models) %>% arrange(p.value) %>% kable(caption="Results")
+```
+
+```{r}
+plot_data <- model_data %>% 
+  unnest(cols=`data`) %>%
+  pivot_wider(names_from=MetaboliteName,values_from=c(Metabolite,`Metabolite_BL`))
+```
+
+
+```{r, include=TRUE}
+ggplot(plot_data,aes(x=Phase,y=`Metabolite_cis-Aconitate`)) + geom_jitter() 
+ggplot(plot_data,aes(x=`Metabolite_N-Methylnicotinamide`,y=`3PBA`)) + geom_point() + geom_smooth(formula = "y~x", method="lm")
+ggplot(plot_data,aes(x=`Metabolite_Fumarate`,y=`3PBA`)) + geom_point() + geom_smooth(formula = "y~x", method="lm")
+```
+
+

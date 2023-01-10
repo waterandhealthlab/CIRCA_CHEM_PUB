@@ -1,0 +1,583 @@
+---
+title: "Circa chem"
+author: "Stavros Oikonomou"
+date: "11/9/2021"
+output:
+  html_document: default
+  word_document: default
+---
+
+```{r, warning=FALSE, message=FALSE, include=FALSE}
+rm(list = ls(all=TRUE))
+ipak <- function(pkg){
+  new.pkg <- pkg[!(pkg %in% installed.packages()[, "Package"])]
+  if (length(new.pkg)) 
+    install.packages(new.pkg, dependencies = TRUE)
+  sapply(pkg, require, character.only = TRUE)
+}
+
+# usage
+packages <- c("readxl","dplyr","stringr","NADA","lme4","sjPlot",
+              "tableone","knitr","ggplot2","reshape2","tidyr")
+
+ipak(packages)
+```
+
+
+```{r, include=FALSE}
+#loading the datasets
+pba_cn <- read_excel("./data_files/3PBA-6CN Creatinine CIRCACHEM Final.xlsx", 
+                     sheet = "6CN-3PBA", skip=1, 
+                     col_names = c("Code", "CN", "PBA","X4","X5","X6","X7"))
+
+df_crea <- read_excel("./data_files/3PBA-6CN Creatinine CIRCACHEM Final.xlsx", 
+                      sheet = "Creatinine", col_names = c("Code","Creatinine"),skip=1)
+
+df_hne <- read_excel("./data_files/4HNE CIRCACHEM RESULTS_v2.xlsx", 
+                      sheet = "final3", col_names = c("Code","hne"),skip=1)
+
+df_cor <- read_excel("./data_files/Cortisol.xlsx", 
+                       col_names = c("cortisol","Code"),skip=1)
+
+df_descr <- read_excel("./data_files/Copy of CIRCA CHEM_Participants Registry_29.12.20_2.xlsx")
+
+```
+
+```{r,include=FALSE}
+#setting the cn/pb lod and loq
+cn_lod <- 0.075
+cn_loq <- 0.226
+pb_lod <- 0.049
+pb_loq <- 0.146
+
+#setting the cortisol lod and loq
+cor_lod <- 0.172
+cor_loq <- 0.516
+```
+
+```{r, include=FALSE}
+#creating the info from Code feature
+info_pest <- str_split_fixed(pba_cn$Code, "-",4) %>% data.frame()
+info_pest <- info_pest %>% select(-X1) %>%
+  rename(record_id=X2, group=X3, sample_number=X4) %>%
+  mutate(record_id=as.factor(record_id), 
+         group=as.factor(group), 
+         sample_number=as.factor(sample_number))
+
+#create record_id, group and sample number from code for cortsol
+df_cor <- df_cor %>% separate(
+  Code,
+  c(NA, "record_id","group","sample_number"))
+
+#bind back to original the splitted information
+df_pest <- cbind.data.frame(info_pest,CN=pba_cn$CN,PBA=pba_cn$PBA)
+
+#creating variables for descriptive
+df_pest <- df_pest %>% mutate(cnlod=as.factor(ifelse(CN<cn_lod,"Below LOD","Above LOD")),
+                              pbalod=as.factor(ifelse(PBA<pb_lod,"Below LOD","Above LOD")),
+                              cnlod_TF=ifelse(CN<cn_lod,T,F),
+                              cnlodloq=cut(CN, breaks=c(-Inf, cn_lod,cn_loq, Inf),
+                                           labels=c("ND","NQ","D&Q")),
+                              pblodloq=cut(PBA, breaks=c(-Inf, pb_lod,pb_loq, Inf),
+                                           labels=c("ND","NQ","D&Q")))
+
+#creating variables for descriptive
+df_cor <- df_cor %>% mutate(corlod=as.factor(ifelse(cortisol<cor_lod,"Below LOD","Above LOD")),
+                              corlod_TF=ifelse(cortisol<cor_lod,T,F),
+                              corlodloq=cut(cortisol, breaks=c(-Inf, cor_lod,cor_loq, Inf),
+                                           labels=c("ND","NQ","D&Q")))
+
+prop.table(table(df_pest$cnlod))
+prop.table(table(df_pest$cnlodloq))
+
+prop.table(table(df_pest$pbalod))
+prop.table(table(df_pest$pblodloq))
+
+prop.table(table(df_cor$corlod))
+prop.table(table(df_cor$corlodloq))
+
+#applying ros function to deal with 6-CN values below LOD. We going to use ros function because with have a big percentage of values below lod.
+cnf <- ros(df_pest$CN,df_pest$cnlod_TF, forwardT="log",reverseT="exp", na.action=NULL) %>%
+  as.data.frame()
+
+#bind back the new values
+df_pest2 <- merge(df_pest,cnf, by.x="CN", by.y="obs") %>%
+  select(record_id,group,sample_number,PBA,modeled) %>%
+  dplyr::rename(CN=modeled) %>%
+  arrange(record_id,group,sample_number)
+
+# For cortisol values < LOD -> LOD/2
+df_cor <- df_cor %>% 
+  mutate(cor = case_when(cortisol < cor_lod ~ cor_lod/2,
+                         TRUE ~ cortisol))
+
+#check PBA and CN for normality
+hist(df_pest2$PBA)
+hist(df_pest2$CN)
+
+#check cortisol for normality
+hist(df_cor$cor)
+
+rm(pba_cn,info_pest, cnf)
+```
+
+`r kable(prop.table(table(df_pest$cnlod)),caption="6-CN Above and Below LOD percentage")`
+
+`r kable(prop.table(table(df_pest$cnlodloq)),caption="6-CN Above and Below LOD/LOQ/Above LOQ percentage")`
+
+`r kable(prop.table(table(df_pest$pbalod)),caption="3-PBA Above and Below LOD percentage")`
+
+`r kable(prop.table(table(df_pest$pblodloq)),caption="3-PBA Above and Below LOD/LOQ/Above LOQ percentage")`
+
+`r kable(prop.table(table(df_cor$corlod)),caption="Cortisol Above and Below LOD percentage")`
+
+`r kable(prop.table(table(df_cor$corlodloq)),caption="Cortisol Above and Below LOD/LOQ/Above LOQ percentage")`
+
+```{r, include=FALSE}
+#creating the info from Code feature
+cr_info <- str_split_fixed(df_crea$Code, "-",4) %>% data.frame()
+cr_info <- cr_info %>% select(-X1) %>%
+  rename(record_id=X2, group=X3, sample_number=X4) %>%
+  mutate(record_id=as.factor(record_id), 
+         group=as.factor(group), 
+         sample_number=as.factor(sample_number)) %>%
+  #we need to change the one digit entries for 1 to 01 in order to match with the PBA/CN dataset
+  mutate(record_id=as.factor(ifelse(str_length(record_id)==1,paste0("0",record_id),
+                           as.character(record_id))))
+
+#bind back the data
+df_cr <- cbind(cr_info,creatinine=df_crea$Creatinine) %>%
+  arrange(record_id,group,sample_number)
+
+#checking the normality of creatinine
+hist(df_cr$crea)
+
+#counting the number of entries per participant
+removing_part <- df_cr %>% group_by(record_id) %>% summarise(n=n())
+#participants with not 8 entries need to be excluded
+removing_part <- removing_part %>% filter(n<8) %>% pull(record_id)
+
+rm(cr_info, df_crea, df_pest)
+```
+
+```{r, include=FALSE, warning=FALSE, message=FALSE}
+#creating the info for hne data
+hne_info <- str_split_fixed(df_hne$Code, "-",4) %>% data.frame()
+
+hne_info <- hne_info %>% select(-X1) %>%
+  rename(record_id=X2, group=X3, sample_number=X4) %>%
+  mutate(record_id=as.factor(record_id), 
+         group=as.factor(group), 
+         sample_number=as.factor(sample_number)) %>%
+  #we need to change the one digit entries for 1 to 01 in order to match with the PBA/CN dataset
+  mutate(record_id=as.factor(ifelse(str_length(record_id)==1,paste0("0",record_id),
+                           as.character(record_id))))
+
+
+
+df_hne2 <- cbind(hne_info,hne=df_hne$hne) %>%
+  arrange(record_id,group,sample_number) %>%
+  mutate(hne=as.numeric(hne))
+
+hist(df_hne2$hne)
+
+rm(hne_info,df_hne, cn_lod, cn_loq, pb_lod, pb_loq)
+```
+
+
+```{r, include=FALSE}
+#age and sex data
+df_age_sex <- df_descr[1:45,c(1,3,4)] %>% setNames(.,c("record_id","sex","age")) %>%
+  mutate(record_id=as.factor(record_id),
+         sex=as.factor(ifelse(sex=="F","Female","Male"))) %>%
+  mutate(record_id=as.factor(ifelse(str_length(record_id)==1,paste0("0",record_id),
+                           as.character(record_id))))
+
+rm(df_descr)
+```
+
+```{r, include=FALSE}
+#combine PBA/CN/HNE/cortisol and creatinine dataset.
+df <- merge(df_pest2,df_cr, all=T, by=c("record_id","group","sample_number")) %>%
+  merge(., df_hne2, all=T, by=c("record_id","group","sample_number")) %>%
+    merge(., df_cor, all=T, by=c("record_id","group","sample_number")) %>%
+  filter(!(record_id %in% removing_part)) %>% #removing non complete data participant
+  filter(!(record_id %in% c("43","32"))) %>% #removing participants from compliance filter in previous script
+  mutate(record_id=factor(record_id)) %>%
+  mutate(cn_adj=CN/creatinine, #adjust measurements with creatinine
+         pb_adj=PBA/creatinine,
+         hne_adj=hne/creatinine,
+         cor_adj=cor/creatinine) %>%
+  #creating the phase info
+  mutate(phase=case_when(group=="A" & sample_number %in% c("1","2","3","4")~"Morning",
+                         group=="A" & sample_number %in% c("5","6","7","8")~"Evening",
+                         group=="B" & sample_number %in% c("1","2","3","4")~"Evening",
+                         group=="B" & sample_number %in% c("5","6","7","8")~"Morning"))
+
+df_nobl <- df %>% filter(!(sample_number %in% c("1","5"))) # non baseline data
+
+df_bl <- df %>% filter(sample_number %in% c("1","5")) %>% #baseline data
+  select(-sample_number)
+
+#combining baseline and treatment data
+df_final <- merge(df_nobl,df_bl, by=c("record_id","group","phase"), all.x = T, 
+                  suffixes = c("_TR","_BL")) %>%
+  mutate(sample_number_order=case_when(sample_number %in% c("2","6")~"1",
+                                       sample_number %in% c("3","7")~"2",
+                                       sample_number %in% c("4","8")~"3")) %>%
+  #log and scale the adjusted cn,pba and hne measurements
+  mutate(cn_adj_TR_log_S=scale(log(cn_adj_TR), scale=FALSE),
+         cn_adj_BL_log_S=scale(log(cn_adj_BL), scale=FALSE),
+         pb_adj_TR_log_S=scale(log(pb_adj_TR), scale=FALSE),
+         pb_adj_BL_log_S=scale(log(pb_adj_BL), scale=FALSE),
+         hne_adj_TR_log_S=scale(log(hne_adj_TR), scale=FALSE),
+         hne_adj_BL_log_S=scale(log(hne_adj_BL), scale=FALSE),
+         cor_adj_TR_log_S=scale(log(cor_adj_TR), scale=FALSE),
+         cor_adj_BL_log_S=scale(log(cor_adj_BL), scale=FALSE)) %>%
+  #join with age and sex data.
+  left_join(df_age_sex)
+
+rm(df_bl, df_nobl)
+
+df2 <- na.omit(df)
+df2 <- df2[-98,]
+```
+
+`r kable(print(CreateTableOne(c("PBA","CN","creatinine","hne","cor"), data=df2,  strata=c("phase"), addOverall=T, testNonNormal = wilcox.test , argsNonNormal = list(paired = TRUE)), nonnormal =c("PBA","CN","creatinine","hne","cor")), "pipe")`
+
+```{r plots, echo=FALSE, warning=FALSE, message=FALSE}
+ggplot(df, aes(x=phase,y=CN, fill=phase)) + geom_boxplot() + 
+  xlab("Phase") + ylab("CN") + theme_minimal() + ggtitle("6-CN boxplot for morning and evening")
+
+ggplot(df, aes(x=phase,y=PBA, fill=phase)) + geom_boxplot() + 
+  xlab("Phase") + ylab("PBA") + theme_minimal() + ggtitle("3-PBA boxplot for morning and evening")
+
+ggplot(df, aes(x=phase,y=creatinine, fill=phase)) + geom_boxplot() + 
+  xlab("Phase") + ylab("Creatinine") + theme_minimal() + ggtitle("Creatinine boxplot for morning and evening")
+
+ggplot(df, aes(x=phase,y=hne, fill=phase)) + geom_boxplot() + 
+  xlab("Phase") + ylab("4-HNE") + theme_minimal() + ggtitle("4-HNE boxplot for morning and evening")
+
+ggplot(df, aes(x=phase,y=cor, fill=phase)) + geom_boxplot() + 
+  xlab("Phase") + ylab("Cortisol") + theme_minimal() + ggtitle("Cortisol boxplot for morning and evening")
+```
+
+```{r normality check, echo=FALSE}
+#raw data qqplot
+qqnorm(df$CN, main="6-CN QQ plot")
+qqnorm(df$PBA, main="3-PBA QQ plot")
+qqnorm(df$hne, main="4-HNE QQ plot")
+qqnorm(df$cor, main="Cortisol QQ plot")
+
+
+#adj by creatinine qqplot
+qqnorm(df$cn_adj, main="6-CN adjusted by creatinine QQ plot")
+qqnorm(df$pb_adj, main="3-PBA adjusted by creatinine QQ plot")
+qqnorm(df$hne_adj, main="4-HNE adjusted by creatinine QQ plot")
+qqnorm(df$cor_adj, main="Cortisol adjusted by creatinine QQ plot")
+
+
+#log transformed for adjusted data
+df <- df %>% mutate(cn_logadj=log(cn_adj),
+                    pb_logadj=log(pb_adj),
+                    hne_logadj=log(hne_adj),
+                    cor_logadj=log(cor_adj))
+
+#qqplot for log transformed adjusted data.
+qqnorm(df$cn_logadj, main="6-CN adjusted by creatinine and log transformed QQ plot")
+qqnorm(df$pb_logadj, main="3-PBA adjusted by creatinine and log transformed QQ plot")
+qqnorm(df$hne_logadj, main="4-HNE adjusted by creatinine and log transformed QQ plot")
+qqnorm(df$cor_logadj, main="Cortisol adjusted by creatinine and log transformed QQ plot")
+
+```
+
+```{r plots2, echo=FALSE, message=FALSE, warning=FALSE}
+#CN plos
+ggplot(df_final, aes(x=record_id,y=cn_adj_TR_log_S,fill=phase)) + geom_boxplot() + 
+  xlab("Participants") + ylab("6-CN adjusted,log transformed and centered") + theme_minimal() +
+  geom_point(aes(x=record_id, y=cn_adj_BL_log_S, colour=phase), size=2)
+
+ggplot(df_final, aes(x=record_id,y=cn_adj_TR_log_S, fill=phase)) + geom_boxplot() + 
+  xlab("Participants") + ylab("6-CN adjusted,log transformed and centered") + theme_minimal() +
+  facet_wrap(~phase)
+
+ggplot(df_final, aes(x=phase,y=cn_adj_TR_log_S, fill=phase)) + geom_boxplot() + theme_minimal()
+ggplot(df_final, aes(x=phase,y=cn_adj_BL_log_S, fill=phase)) + geom_boxplot() + theme_minimal()
+
+
+#pb plots
+ggplot(df_final, aes(x=record_id,y=pb_adj_TR_log_S,fill=phase)) + geom_boxplot() + 
+  xlab("Participants") + ylab("3-PBA adjusted,log transformed and centered") + theme_minimal() +
+  geom_point(aes(x=record_id, y=pb_adj_BL_log_S, colour=phase), size=2)
+
+ggplot(df_final, aes(x=record_id,y=pb_adj_TR_log_S,fill=phase)) + geom_boxplot() + 
+  xlab("Participants") + ylab("3-PBA adjusted,log transformed and centered") + theme_minimal() +
+  facet_wrap(~phase)
+
+ggplot(df_final, aes(x=phase,y=pb_adj_TR_log_S, fill=phase)) + geom_boxplot() + theme_minimal()
+ggplot(df_final, aes(x=phase,y=pb_adj_BL_log_S, fill=phase)) + geom_boxplot() + theme_minimal()
+
+#hne
+ggplot(df_final, aes(x=record_id,y=hne_adj_TR_log_S,fill=phase)) + geom_boxplot() + 
+  xlab("Participants") + ylab("4-HNE adjusted,log transformed and centered") + theme_minimal() +
+  geom_point(aes(x=record_id, y=hne_adj_BL_log_S, colour=phase), size=2)
+
+ggplot(df_final, aes(x=record_id,y=hne_adj_TR_log_S,fill=phase)) + geom_boxplot() + 
+  xlab("Participants") + ylab("4-HNE adjusted,log transformed and centered") + theme_minimal() +
+  facet_wrap(~phase)
+
+ggplot(df_final, aes(x=phase,y=hne_adj_TR_log_S, fill=phase)) + geom_boxplot() + theme_minimal()
+ggplot(df_final, aes(x=phase,y=hne_adj_BL_log_S, fill=phase)) + geom_boxplot() + theme_minimal()
+
+```
+
+```{r, include=FALSE}
+df_final$phase <- as.factor(df_final$phase)
+df_final$pb_adj_BL_log_S <- as.numeric(df_final$pb_adj_BL_log_S)
+df_final$pb_adj_TR_log_S <- as.numeric(df_final$pb_adj_TR_log_S)
+df_final$cn_adj_BL_log_S <- as.numeric(df_final$cn_adj_BL_log_S)
+df_final$cn_adj_TR_log_S <- as.numeric(df_final$cn_adj_TR_log_S)
+df_final$hne_adj_BL_log_S <- as.numeric(df_final$hne_adj_BL_log_S)
+df_final$hne_adj_TR_log_S <- as.numeric(df_final$hne_adj_TR_log_S)
+
+#creating the day of measurement variable
+df_final$days <- ifelse(df_final$sample_number_order=="1",2,
+                        ifelse(df_final$sample_number_order=="2",4,7))
+
+#manual correction for some participants who didn't follow the program of urine sample.
+df_final[df_final$record_id=="28" & df_final$sample_number=="8","days"] <- 8
+
+df_final[df_final$record_id=="02" & df_final$sample_number=="6","days"] <- 1
+
+df_final[df_final$record_id=="02" & df_final$sample_number=="7","days"] <- 5
+
+df_final2 <- na.omit(df_final)
+df_final2 <- df_final2[-73,]
+```
+
+`r kable(print(CreateTableOne(c("CN_BL","CN_TR","PBA_BL","PBA_TR","hne_BL","hne_TR","cor_BL","cor_TR","cn_adj_BL","cn_adj_TR","pb_adj_BL", "pb_adj_TR", "hne_adj_BL","hne_adj_TR","cor_adj_BL","cor_adj_TR"), data=df_final2, strata=c("phase"),addOverall=T ,testNonNormal = wilcox.test, argsNonNormal = list(paired = TRUE) ),nonnormal =c("CN_BL","CN_TR","PBA_BL","PBA_TR","hne_BL","hne_TR","cor_BL","cor_TR","cn_adj_BL","cn_adj_TR","pb_adj_BL", "pb_adj_TR", "hne_adj_BL","hne_adj_TR","cor_adj_BL","cor_adj_TR")), "pipe")`
+
+```{r quantiles, include=FALSE}
+
+
+cn_qo<-round(quantile(df$CN, c(0, .05,.25,.5,.75,.95,1)), digits=2)
+pb_qo<-round(quantile(df$PBA, c(0, .05,.25,.5,.75,.95,1)), digits=2)
+cr_qo<-round(quantile(df$creatinine, c(0, .05,.25,.5,.75,.95,1)), digits=2)
+hne_qo<-round(quantile(na.omit(df$hne), c(0, .05,.25,.5,.75,.95,1)), digits=2)
+cor_qo<-round(quantile(na.omit(df$cor), c(0, .05,.25,.5,.75,.95,1)), digits=2)
+
+
+cnbl_qo<-round(quantile(df_final$CN_BL, c(0, .05,.25,.5,.75,.95,1)), digits=2)
+pbbl_qo<-round(quantile(df_final$PBA_BL, c(0, .05,.25,.5,.75,.95,1)), digits=2)
+hnebl_qo<-round(quantile(df_final$hne_BL, c(0, .05,.25,.5,.75,.95,1)), digits=2)
+corbl_qo<-round(quantile(na.omit(df_final$cor_BL), c(0, .05,.25,.5,.75,.95,1)), digits=2)
+
+
+cntr_qo<-round(quantile(df_final$CN_TR, c(0, .05,.25,.5,.75,.95,1)), digits=2)
+pbtr_qo<-round(quantile(df_final$PBA_TR, c(0, .05,.25,.5,.75,.95,1)), digits=2)
+hnetr_qo<-round(quantile(na.omit(df_final$hne_TR), c(0, .05,.25,.5,.75,.95,1)), digits=2)
+cortr_qo<-round(quantile(na.omit(df_final$cor_TR), c(0, .05,.25,.5,.75,.95,1)), digits=2)
+
+
+cnadjbl_qo<-round(quantile(df_final$cn_adj_BL, c(0, .05,.25,.5,.75,.95,1)), digits=2)
+pbadjbl_qo<-round(quantile(df_final$pb_adj_BL, c(0, .05,.25,.5,.75,.95,1)), digits=2)
+hneadjbl_qo<-round(quantile(df_final$hne_adj_BL, c(0, .05,.25,.5,.75,.95,1)), digits=2)
+coradjbl_qo<-round(quantile(na.omit(df_final$cor_adj_BL), c(0, .05,.25,.5,.75,.95,1)), digits=2)
+
+
+cnadjtr_qo<-round(quantile(df_final$cn_adj_TR, c(0, .05,.25,.5,.75,.95,1)), digits=2)
+pbadjtr_qo<-round(quantile(df_final$pb_adj_TR, c(0, .05,.25,.5,.75,.95,1)), digits=2)
+hneadjtr_qo <- round(quantile(na.omit(df_final$hne_adj_TR), c(0, .05,.25,.5,.75,.95,1)), digits=2)
+coradjtr_qo <- round(quantile(na.omit(df_final$cor_adj_TR), c(0, .05,.25,.5,.75,.95,1)), digits=2)
+
+
+cnadjbls_qo<-round(quantile(df_final$cn_adj_BL_log_S, c(0, .05,.25,.5,.75,.95,1)), digits=2)
+pbadjbls_qo<-round(quantile(df_final$pb_adj_BL_log_S, c(0, .05,.25,.5,.75,.95,1)), digits=2)
+hneadjbls_qo <- round(quantile(df_final$hne_adj_BL_log_S, c(0, .05,.25,.5,.75,.95,1)), digits=2)
+coradjbls_qo <- round(quantile(na.omit(df_final$cor_adj_BL_log_S), c(0, .05,.25,.5,.75,.95,1)), digits=2)
+
+
+cnadjtrs_qo<-round(quantile(df_final$cn_adj_TR_log_S, c(0, .05,.25,.5,.75,.95,1)), digits=2)
+pbadjtrs_qo<-round(quantile(df_final$pb_adj_TR_log_S, c(0, .05,.25,.5,.75,.95,1)), digits=2)
+hneadjtrs_qo <-round(quantile(na.omit(df_final$hne_adj_TR_log_S), c(0, .05,.25,.5,.75,.95,1)), digits=2)
+coradjtrs_qo <-round(quantile(na.omit(df_final$cor_adj_TR_log_S), c(0, .05,.25,.5,.75,.95,1)), digits=2)
+
+
+quantil <- rbind(cn_qo,pb_qo,cr_qo,hne_qo,cor_qo,
+                 cnbl_qo,pbbl_qo,hnebl_qo,corbl_qo,
+                 cntr_qo,pbtr_qo,hnetr_qo,cortr_qo,
+                 cnadjbl_qo,pbadjbl_qo,hneadjbl_qo,coradjbl_qo,
+                 cnadjtr_qo,pbadjtr_qo,hneadjtr_qo,coradjtr_qo,
+                 cnadjbls_qo,pbadjbls_qo,hneadjbls_qo,coradjbls_qo,
+                 cnadjtrs_qo,pbadjtrs_qo,hneadjtrs_qo,coradjtrs_qo)
+
+row.names(quantil) <- c("6-CN","3-PBA","Creatinine","4-HNE","Cortisol",
+                        "6-CN Baseline","3-PBA Baseline","4-HNE Baseline","Cortisol Baseline",
+                        "6-CN Treatment","3-PBA Treatment","4-HNE Treatment","Cortisol Treatment",
+                        "6-CN adjusted Baseline","3-PBA adjusted Baseline","4-HNE adjusted Baseline","Cortisol adjusted Baseline",
+                        "6-CN adjusted Treatment","3-PBA adjusted Treatment", "4-HNE adjusted Treatment","Cortisol adjusted Treatment",
+                        "6-CN log adjusted Baseline centered","3-PBA log adjusted Baseline centered","4-HNE log adjusted Baseline centered", 
+                        "Cortisol log adjusted Baseline centered",
+                        "6-CN log adjusted Treatment centered","3-PBA log adjusted Treatment centered","4-HNE log adjusted Treatment centered",
+                         "Cortisol log adjusted Treatment centered")
+```
+
+### Quantiles
+
+`r kable(quantil)`
+
+```{r, include=FALSE}
+#df_final$phase <- relevel(as.factor(df_final$phase), ref="Morning")
+
+cn_model_days <- lmer(cn_adj_TR_log_S ~ phase + cn_adj_BL_log_S + days + sex + age + cor_adj_TR_log_S +
+                 + phase*days + (1|record_id),df_final)
+
+tab_model(cn_model_days)
+
+pb_model_days <- lmer(pb_adj_TR_log_S ~ phase + pb_adj_BL_log_S + days + sex + age + cor_adj_TR_log_S +
+                 + phase*days + (1|record_id), df_final)
+
+tab_model(pb_model_days)
+
+hne_model_days <- lmer(hne_adj_TR_log_S ~ phase + hne_adj_BL_log_S + days + sex + age
+                 + phase*days + (1|record_id), na.omit(df_final))
+
+tab_model(hne_model_days)
+
+hne_pb_model <- lmer(hne_adj_TR_log_S ~ hne_adj_BL_log_S + pb_adj_TR_log_S + days + sex + age
+                 + (1|record_id), na.omit(df_final))
+
+tab_model(hne_pb_model)
+
+hne_cn_model <- lmer(hne_adj_TR_log_S ~ hne_adj_BL_log_S + cn_adj_TR_log_S + days + sex + age
+                 + (1|record_id), na.omit(df_final))
+
+tab_model(hne_cn_model)
+```
+
+### 6-CN model
+`r tab_model(cn_model_days)`
+
+### 3-PBA model
+`r tab_model(pb_model_days)`
+
+### 4-HNE model
+`r tab_model(hne_model_days)`
+
+### 4-HNE ~ 3-PBA model
+`r tab_model(hne_pb_model)`
+
+### 4-HNE ~ 6-CN model
+`r tab_model(hne_cn_model)`
+
+```{r plots3, echo=FALSE, message=FALSE, warning=FALSE}
+
+df_final_plot <- df_final %>% mutate(days=as.factor(days)) %>% 
+  select(days,pb_adj_TR_log_S,pb_adj_BL_log_S, cn_adj_TR_log_S,cn_adj_BL_log_S,
+         hne_adj_TR_log_S,hne_adj_BL_log_S,
+        cor_adj_TR_log_S,cor_adj_BL_log_S,phase)
+levels(df_final_plot$days) <- c(levels(df_final_plot$days),"3","6")
+
+df_final_plot_2 <-data.frame(as.factor(as.character("3")),NA,NA,NA,NA,NA,NA,NA,NA,
+                             as.factor(as.character("Evening"))) %>%
+                               setNames(names(df_final_plot))
+
+df_final_plot_3 <-data.frame(as.factor(as.character("6")),NA,NA,NA,NA,NA,NA,NA,NA,
+                             as.factor(as.character("Evening"))) %>%
+                               setNames(names(df_final_plot))
+
+df_final_plot_4 <-data.frame(as.factor(as.character("3")),NA,NA,NA,NA,NA,NA,NA,NA,
+                             as.factor(as.character("Morning"))) %>%
+                               setNames(names(df_final_plot))
+
+df_final_plot_5 <-data.frame(as.factor(as.character("6")),NA,NA,NA,NA,NA,NA,NA,NA,
+                             as.factor(as.character("Morning"))) %>%
+                               setNames(names(df_final_plot))
+
+df_final_plot_df <- rbind(df_final_plot, df_final_plot_2,df_final_plot_3,df_final_plot_4,
+                          df_final_plot_5)
+
+ggplot(df_final_plot_df, aes(x=as.factor(days),y=pb_adj_TR_log_S, fill=phase)) + geom_boxplot() +
+  geom_jitter() + facet_wrap(~phase) + xlab("Days after baseline measurement") +
+  ylab("3-PBA log adj cent") + geom_boxplot(aes(x=as.factor("0=BL"),y=pb_adj_BL_log_S),fill=I("Green")) +
+  geom_jitter(aes(x=as.factor("0=BL"),y=pb_adj_BL_log_S)) + theme(legend.position = "none")
+
+ggplot(df_final_plot_df, aes(x=as.factor(days),y=cn_adj_TR_log_S, fill=phase)) + geom_boxplot() +
+  geom_jitter() + facet_wrap(~phase) + xlab("Days after baseline measurement") +
+  ylab("6-CN log adj cent") + geom_boxplot(aes(x=as.factor("0=BL"),y=cn_adj_BL_log_S), fill=I("Green")) +
+  geom_jitter(aes(x=as.factor("0=BL"),y=cn_adj_BL_log_S)) + theme(legend.position = "none")
+
+ggplot(df_final_plot_df, aes(x=as.factor(days),y=hne_adj_TR_log_S, fill=phase)) + geom_boxplot() +
+  geom_jitter() + facet_wrap(~phase) + xlab("Days after baseline measurement") +
+  ylab("4-HNE log adj cent") + 
+  geom_boxplot(aes(x=as.factor("0=BL"),y=hne_adj_BL_log_S), fill=I("Green")) +
+  geom_jitter(aes(x=as.factor("0=BL"),y=hne_adj_BL_log_S)) + theme(legend.position = "none")
+
+ggplot(df_final_plot_df, aes(x=as.factor(days),y=cor_adj_TR_log_S, fill=phase)) + geom_boxplot() +
+  geom_jitter() + facet_wrap(~phase) + xlab("Days after baseline measurement") +
+  ylab("Cortisol log adj cent") + 
+  geom_boxplot(aes(x=as.factor("0=BL"),y=cor_adj_BL_log_S), fill=I("Green")) +
+  geom_jitter(aes(x=as.factor("0=BL"),y=cor_adj_BL_log_S)) + theme(legend.position = "none")
+```
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+ggplot(df_final, aes(y=hne_adj_TR_log_S,x=cn_adj_TR_log_S, color=sex)) + geom_point( aes(color=sex)) + 
+  geom_smooth() + theme_classic() + ylab("4-HNE log centered adjusted") + xlab("6-CN log centered adjusted")
+
+ggplot(df_final, aes(y=hne_adj_TR_log_S,x=pb_adj_TR_log_S,color=sex)) + geom_point(aes(color=sex)) + 
+  geom_smooth() + theme_classic() + ylab("4-HNE log centered adjusted") + xlab("3-PBA log centered adjusted")
+```
+
+## Sensitivity analysis
+
+exclude participants with compliance <80% in either one of the 2 intervention periods 
+```{r, include=FALSE}
+
+# based on previous script 
+# firsec = id with consumption below 39 in either one of the 2 weeks
+#kable(print(firsec),"pipe")
+#[1] "3"  "14" "24" "32" "40" "43" "10" "39"
+
+df_final_sens <- df_final %>% 
+  filter(!(record_id %in% c("03","14","24","32","40","43","10","39"))) # exclude 
+
+cn_model_sens <- lmer(cn_adj_TR_log_S ~ phase + cn_adj_BL_log_S + days + sex + age
+                 + phase*days + (1|record_id),df_final_sens)
+
+tab_model(cn_model_sens)
+
+pb_model_sens <- lmer(pb_adj_TR_log_S ~ phase + pb_adj_BL_log_S + days + sex + age
+                 + phase*days + (1|record_id), df_final_sens)
+
+tab_model(pb_model_sens)
+
+hne_model_sens <- lmer(hne_adj_TR_log_S ~ phase + hne_adj_BL_log_S + days + sex + age
+                 + phase*days + (1|record_id), na.omit(df_final_sens))
+
+tab_model(hne_model_sens)
+
+hne_pb_model_sens <- lmer(hne_adj_TR_log_S ~ hne_adj_BL_log_S + pb_adj_TR_log_S + days + sex + age
+                 + (1|record_id), na.omit(df_final_sens))
+
+tab_model(hne_pb_model_sens)
+
+hne_cn_model_sens <- lmer(hne_adj_TR_log_S ~ hne_adj_BL_log_S + cn_adj_TR_log_S + days + sex + age
+                 + (1|record_id), na.omit(df_final_sens))
+
+tab_model(hne_cn_model_sens)
+```
+
+### 6-CN model
+`r tab_model(cn_model_sens)`
+
+### 3-PBA model
+`r tab_model(pb_model_sens)`
+
+### 4-HNE model
+`r tab_model(hne_model_sens)`
+
+### 4-HNE ~ 3-PBA model
+`r tab_model(hne_pb_model_sens)`
+
+### 4-HNE ~ 6-CN model
+`r tab_model(hne_cn_model_sens)`

@@ -1,0 +1,861 @@
+---
+title: "CIRCA CHEM"
+author: "Stavros Oikonomou"
+date: "11/9/2021"
+output:
+  html_document: default
+  word_document: default
+---
+
+```{r, warning=F,message=F, include=F}
+rm(list = ls(all=TRUE))
+ipak <- function(pkg){
+  new.pkg <- pkg[!(pkg %in% installed.packages()[, "Package"])]
+  if (length(new.pkg)) 
+    install.packages(new.pkg, dependencies = TRUE)
+  sapply(pkg, require, character.only = TRUE)
+}
+
+# usage
+packages <- c("caret","dplyr","ggplot2","lubridate","readxl", "stringr",
+              "kableExtra","tableone","knitr","magrittr")
+
+ipak(packages)
+
+rm(ipak,packages)
+```
+
+```{r, include=FALSE, warning=FALSE, message=FALSE}
+df <- read.csv("./data_files/CIRCACHEMStudy_DATA_2021-03-04_1440_3.csv") #load the data
+
+df_descr <- read_excel("./data_files/Copy of CIRCA CHEM_Participants Registry_29.12.20_2.xlsx") #descriptive data
+```
+
+```{r, include=FALSE}
+
+withdraw <- c(9,11,13,34) #excluding the 4 participants. 9 and 11 leave the second week and 13 and 34 they never start.
+df <- df[!(df[,1] %in% withdraw),] 
+names(df)[1] <- "record_id"
+
+groupA <- c(1,2,5,6,10,14,17,18,21,22,25,
+            26,29,30,33,35,37,38,41,42,45) #list of participants in group A.
+
+df$group <- ifelse(df$record_id %in% groupA, "A","B") # creating the group variable
+
+df_ph1 <- df_descr[1:45,c(1,26,27)] %>% mutate(week=1) %>%
+  setNames(c("record_id","total photographs","photo compliance","week")) #week 1 photo compliance
+df_ph2 <- df_descr[1:45,c(1,49,50)] %>% mutate(week=2) %>%
+  setNames(c("record_id","total photographs","photo compliance","week")) #week 2 photo compliance
+
+df_photo <- rbind(df_ph1,df_ph2) %>%  # combine the 2 week compliance to one
+  mutate(group=as.factor(ifelse(record_id %in% groupA, "A","B"))) %>% #creating the group variable
+  mutate(phase=case_when(group=="A" & week==1~"Morning", #creating the phase (morning/evening) variable
+                         group=="A" & week==2~"Evening",
+                         group=="B" & week==1~"Evening",
+                         group=="B" & week==2~"Morning")) %>%
+  mutate(record_id=as.factor(record_id))
+
+
+df_age <- df_descr[1:45,c(1,4)] %>% setNames(.,c("record_id","age")) #age data
+
+rm(df_descr, df_ph1, df_ph2)
+```
+
+
+```{r, include=FALSE}
+# splitting the data
+df_info <- df %>% select("record_id","gender","city","group") %>% # filtering out the personal info
+  mutate(city=ifelse(city==2,"Limassol","Paphos"),
+         gender=ifelse(gender==2,"Female","Male")) %>%
+  left_join(df_age) %>%
+  mutate(record_id= as.factor(record_id))
+
+df_photo <- df_info %>% left_join(df_photo)
+
+df_anthrop <- df %>% select(record_id,height,weight,bmi,waist,
+                                weight_2, bmi_2, waist_2,
+                                weight_3, bmi3, waist_3) %>%
+  mutate(group=ifelse(record_id %in% groupA, "A", "B"),
+         #if participants report height to meters we multiple with 100 to get cm measurements.
+         height=as.numeric(ifelse(height<100,height*100, height))) %>%
+  mutate(record_id=as.factor(record_id)) %>%
+  left_join(df_info)
+
+rm(df_age)
+```
+
+```{r splitting the daily questionnaires, include=FALSE}
+df_day1 <- subset(df, select=c(record_id,ccaa1_timestamp:ccaa1_complete))
+df_day2 <- subset(df, select=c(record_id,cedd2_timestamp:cedd2_complete))
+df_day3 <- subset(df, select=c(record_id,eccb3_timestamp:eccb3_complete))
+df_day4 <- subset(df, select=c(record_id,affa4_timestamp:affa4_complete))
+df_day5 <- subset(df, select=c(record_id,edab5_timestamp:edab5_complete))
+df_day6 <- subset(df, select=c(record_id,cafa6_timestamp:cafa6_complete))
+df_day7 <- subset(df, select=c(record_id,fefc7_timestamp:fefc7_complete))
+df_day8 <- subset(df, select=c(record_id,ccaa1_b2a5_timestamp:ccaa1_b2a5_complete))
+df_day9 <- subset(df, select=c(record_id,cedd2_2e8d_timestamp:cedd2_2e8d_complete))
+df_day10 <- subset(df, select=c(record_id,eccb3_c150_timestamp:eccb3_c150_complete))
+df_day11 <- subset(df, select=c(record_id,affa4_a7f6_timestamp:affa4_a7f6_complete))
+df_day12 <- subset(df, select=c(record_id,edab5_b029_timestamp:edab5_b029_complete))
+df_day13 <- subset(df, select=c(record_id,cafa6_3763_timestamp:cafa6_3763_complete))
+df_day14 <- subset(df, select=c(record_id,fefc7_c416_timestamp:fefc7_c416_complete))
+```
+
+```{r creating the urine sample dataset, include=FALSE}
+#urine sample data
+df_urine <- df %>% select(urine_sample,urine_sample_d3,urine_sample_d5, urine_sample_d7,
+                          urine_sample_d8, urine_sample_d10, urine_sample_d12, urine_sample_d14) %>%
+  setNames(c("day_1","day_3","day_5","day_7", "day_8","day_10","day_12", "day_14")) %>%
+  mutate(across(everything(), ~replace(., . ==  1 , "Yes"))) %>%
+  mutate(across(everything(), ~replace(., . ==  2 , "No")))
+```
+
+```{r, include=FALSE}
+#extra information for day1
+d1_extra <- c("onset_date","food_supplements","smoking_general",
+              "smoking_products","cigarettes_mean","supplements_diary")
+
+#extra information for day8
+d8_extra <- c("onset_date_d8","food_supplements_d8","smoking_general_d8",
+              "smoking_products_d8","cigarettes_mean_d8","supplements_diary_d8")
+
+#saving extra information for day1 separately
+day1_extra <- df_day1 %>% select(all_of(d1_extra)) %>% mutate(day=1)
+
+#removing extra information for day1
+df_day1 <- df_day1 %>% select(-all_of(c(d1_extra,"urine_sample"))) %>% mutate(day=1)
+
+#saving extra information for day8 separately
+day8_extra <- df_day8 %>% select(all_of(d8_extra)) %>%
+  mutate(day=8) %>% setNames(.,names(day1_extra))
+
+#removing extra information for day8
+df_day8 <- df_day8 %>% select(-all_of(c(d8_extra,"urine_sample_d8"))) %>%
+  mutate(day=8) %>% setNames(.,names(df_day1))
+
+#creating a dataset for extra info for day1 and day8
+df_extra <- rbind.data.frame(day1_extra,day8_extra)
+
+rm(d1_extra,d8_extra, day1_extra,day8_extra)
+```
+
+```{r, include=FALSE}
+
+#remove urine samples from sample days.
+df_day3 <- df_day3 %>% select(-"urine_sample_d3") %>% 
+  mutate(day=3) %>% setNames(.,names(df_day1))
+
+df_day5 <- df_day5 %>% select(-"urine_sample_d5") %>% 
+  mutate(day=5) %>% setNames(.,names(df_day1))
+
+df_day7 <- df_day7 %>% select(-"urine_sample_d7") %>% 
+  mutate(day=7) %>% setNames(.,names(df_day1))
+
+df_day10 <- df_day10 %>% select(-"urine_sample_d10") %>%
+  mutate(day=10) %>% setNames(.,names(df_day1))
+
+df_day12 <- df_day12 %>% select(-"urine_sample_d12") %>%
+  mutate(day=12) %>% setNames(.,names(df_day1))
+
+df_day14 <- df_day14 %>% select(-"urine_sample_d14") %>%
+  mutate(day=14) %>%setNames(.,names(df_day1))
+
+df_day2 <- df_day2 %>% mutate(day=2) %>% setNames(.,names(df_day1))
+df_day4 <- df_day4 %>% mutate(day=4) %>% setNames(.,names(df_day1))
+df_day6 <- df_day6 %>% mutate(day=6) %>% setNames(.,names(df_day1))
+df_day9 <- df_day9 %>% mutate(day=9) %>% setNames(.,names(df_day1))
+df_day11 <- df_day11 %>% mutate(day=11) %>% setNames(.,names(df_day1))
+df_day13 <- df_day13 %>% mutate(day=13) %>% setNames(.,names(df_day1))
+
+#creating a total dataset
+dataset <- rbind.data.frame(df_day1,df_day2,df_day3,df_day4,df_day5,df_day6,
+                            df_day7,df_day8,df_day9, df_day10,df_day11,
+                            df_day12,df_day13,df_day14)
+
+rm(df_day1,df_day2,df_day3,df_day4,df_day5,df_day6,df_day7,df_day8,df_day9,
+   df_day10,df_day11,df_day12,df_day13,df_day14)
+```
+
+
+```{r, include=FALSE}
+
+#creating a function to change the index of fruits and vegetables
+fruit <- function(x){
+  x=case_when(x==1 ~ 1,
+              x==2 ~ 0.75,
+              x==3 ~ 0.5,
+              x==4 ~ 0.25,
+              x==5 ~ 0,
+              x==6 ~ -1)
+  return(x)
+}
+
+#change the index of fruits and vegetables using the custom function
+dataset <- dataset %>% mutate(orange=fruit(orange),
+                              banana=fruit(banana),
+                              apple=fruit(apple),
+                              pear=fruit(pear),
+                              tomatoes=fruit(tomatoes),
+                              lettuce=fruit(lettuce),
+                              cucumber=fruit(cucumber))
+
+#we code the 6 as -1. -1 is the different proportion of consumption where participants asked to filled the exact amount. So we combining the two columns to one.
+dataset[dataset$orange==-1,"orange"] <- dataset[dataset$orange==-1,"other_orange"]
+dataset[dataset$apple==-1,"apple"] <- dataset[dataset$apple==-1,"other_apple"]
+dataset[dataset$cucumber==-1,"cucumber"] <- dataset[dataset$cucumber==-1,"other_cucumber"]/2
+
+#calculating the fruit, veg and total consumption and the prop of consumption
+dataset <- dataset %>% mutate(fruit=orange+banana+apple+pear,
+                              veg=tomatoes+lettuce+cucumber,
+                              fruit_veg=fruit+veg,
+                              prop_fv=fruit_veg/7,
+                              prop_f=fruit/4,
+                              prop_v=veg/3)
+
+# 1, 6-9 το πρωί | 2, 9-12 το πρωί | 3, 12-3 το μεσημέρι | 4, 3-7 το απόγευμα | 5, 7-10 το βράδυ | 6, Μετά τις 10 το βράδυ
+# If they ate in other times than 9am-12pm and 7pm-10 pm wasn't this calculated against their compliance?
+#compliance metrics.
+dataset <- dataset %>% mutate(time_comp=orange_time___2+orange_time___5 + banana_time___2 +
+                                banana_time___5 + apple_time___2 + apple_time___5 +
+                                pear_time___2 + pear_time___5 + cucumber_time___2+
+                                cucumber_time___5 + tomatoe_time___2 + tomatoe_time___5+
+                                lettuce_time___2 + lettuce_time___5,
+                              time_comp_prop=time_comp/7,
+                              time912= orange_time___2 + banana_time___2 + apple_time___2 + 
+                                pear_time___2 + cucumber_time___2 + tomatoe_time___2 + 
+                                lettuce_time___2,
+                              time710=orange_time___5 + banana_time___5 + apple_time___5 + 
+                                pear_time___5 + cucumber_time___5 + tomatoe_time___5 + 
+                                lettuce_time___5)
+
+
+```
+
+```{r, include=FALSE}
+dataset <- dataset %>% mutate(week=ifelse(day %in% 1:7,"1","2"), #adding the week
+                              record_id=as.factor(record_id), #adding the record id
+                              group=as.factor(ifelse(record_id %in% groupA, "A","B")), #adding group
+                              phase=case_when(group=="A" & week=="1"~"Morning", #adding phase
+                                              group=="A" & week=="2"~"Evening",
+                                              group=="B" & week=="1"~"Evening",
+                                              group=="B" & week=="2"~"Morning"))
+
+#create a data subset with all data we need.
+dfr <- dataset %>% select(record_id,group,day,week,fruit,veg,fruit_veg,prop_fv, prop_f, prop_v,
+                          time_comp,time_comp_prop,time912,time710, phase)
+```
+
+
+```{r, include=FALSE}
+# Typically the participants need to consume 7 fruits/veg for 7 days, so in total 49. Participants with consumption below 80%  need to be excluded. 49*0.8=39.2. So participants below 39 in both weeks need to be excluded.
+
+#participants with consumption below 39 in first week 
+fir <- dfr %>% filter(week==1) %>% group_by(record_id) %>% 
+  summarise(sum=sum(fruit_veg)) %>% filter(sum<39)
+
+#participants with consumption below 39 in second week
+sec <- dfr %>% filter(week==2) %>% group_by(record_id) %>% 
+  summarise(sum=sum(fruit_veg)) %>% filter(sum<39)
+
+#participants with consumption below 39 both weeks 
+firsec <- intersect(fir$record_id,sec$record_id) # these participants will be excluded
+
+```
+
+### id with consumption below 39 for first week
+
+`r kable(print(fir), "pipe")`
+
+### id with consumption below 39 for second week
+
+`r kable(print(sec), "pipe")`
+
+### id with consumption below 39 in either one of the 2 weeks
+
+`r kable(print(firsec),"pipe")`
+
+```{r, include=FALSE}
+rm(fir,sec)
+
+dfr <- dfr %>% filter(!(record_id %in% firsec)) %>%
+  mutate(record_id=factor(record_id))
+
+
+df_info <- df_info %>% filter(!(record_id %in% firsec)) %>%
+  mutate(record_id=factor(record_id))
+
+df_anthrop <- df_anthrop %>% filter(!(record_id %in% firsec)) %>%
+  mutate(record_id=factor(record_id))
+
+df_photo <- df_photo %>% filter(!(record_id %in% firsec)) %>%
+  mutate(record_id=factor(record_id))
+
+dataset <- dataset %>% filter(!(record_id %in% firsec)) %>%
+  mutate(record_id=factor(record_id))
+
+df <- df %>% filter(!(record_id %in% firsec)) %>%
+  mutate(record_id=factor(record_id))
+
+rm(df_urine, df_extra)
+```
+
+
+`r kable(print(CreateTableOne(c("gender","city","age"), data=df_info, strata=c("group"),,addOverall=T)), "pipe")`
+
+`r kable(print(CreateTableOne(c("age"), data=df_info, strata=c("gender"), ,addOverall=T)), "pipe")`
+
+`r kable(print(CreateTableOne(c("height","weight","weight_2","weight_3","waist","waist_2","waist_3","bmi","bmi_2", "bmi3"), data=df_anthrop, strata=c("group"))), "pipe")`
+
+`r kable(print(CreateTableOne(c("height","weight","weight_2","weight_3","waist","waist_2","waist_3","bmi","bmi_2", "bmi3"), data=df_anthrop, strata=c("gender"))), "pipe")`
+
+### Photo compliance
+
+`r kable(print(CreateTableOne(c("total photographs","photo compliance"), data=df_photo, strata=c("group")),nonnormal = c("total photographs")), "pipe")`
+
+`r kable(print(CreateTableOne(c("total photographs","photo compliance"), data=df_photo, strata=c("gender")),nonnormal = c("total photographs")), "pipe")`
+
+`r kable(print(CreateTableOne(c("total photographs","photo compliance"), data=df_photo, strata=c("phase"), testNonNormal = wilcox.test , argsNonNormal = list(paired = FALSE), testNormal=t.test, argsNormal=list(paired = FALSE)),nonnormal = c("total photographs")), "pipe")`
+
+`r kable(print(CreateTableOne(c("total photographs","photo compliance"), data=df_photo, strata=c("week"), testNonNormal = wilcox.test , argsNonNormal = list(paired = TRUE), testNormal=t.test, argsNormal=list(paired=TRUE)),nonnormal = c("total photographs")), "pipe")`
+
+
+
+### Compliance tables
+
+#### Compliance table for participant who suppose to eat the veg/fruits 7-10 pm
+`r kable(print(table(dataset$phase, dataset$time710)),  "pipe")`
+
+#### Compliance table for participant who suppose to eat the veg/fruits 9-12 am
+
+`r kable(print(table(dataset$phase, dataset$time912)),  "pipe")`
+
+### Summary of fruit, veg, sum and proportion per group type and week
+
+`r kable(print(CreateTableOne(c("fruit","veg","fruit_veg","prop_fv","prop_f","prop_v"), data=dfr, strata=c("week") ,addOverall=T,testNonNormal = wilcox.test , argsNonNormal = list(paired = TRUE), testNormal=t.test, argsNormal=list(paired=TRUE)),nonnormal = c("fruit","veg","fruit_veg")),  "pipe")`
+
+`r kable(print(CreateTableOne(c("fruit","veg","fruit_veg","prop_fv","prop_f","prop_v"), data=dfr, strata=c("group") ,addOverall=T),nonnormal = c("fruit","veg","fruit_veg")), "pipe")`
+
+`r kable(print(CreateTableOne(c("fruit","veg","fruit_veg","prop_fv","prop_f","prop_v"), data=dfr, strata=c("phase") ,addOverall=T,testNonNormal = wilcox.test , argsNonNormal = list(paired = TRUE), testNormal=t.test, argsNormal=list(paired=TRUE)),nonnormal = c("fruit","veg","fruit_veg")), "pipe")`
+
+### Summary of time compliance per Group type and week.
+
+`r kable(print(CreateTableOne(c("time_comp", "time_comp_prop"), data=dfr, strata=c("group") ,addOverall=T),nonnormal = c("time_comp")), "pipe")`
+
+`r kable(print(CreateTableOne(c("time_comp", "time_comp_prop"), data=dfr, strata=c("week") ,addOverall=T,testNonNormal = wilcox.test , argsNonNormal = list(paired = TRUE), testNormal=t.test, argsNormal=list(paired=TRUE)),nonnormal = c("time_comp")), "pipe")`
+
+`r kable(print(CreateTableOne(c("time_comp", "time_comp_prop"), data=dfr, strata=c("phase") ,addOverall=T,testNonNormal = wilcox.test , argsNonNormal = list(paired = TRUE), testNormal=t.test, argsNormal=list(paired=TRUE)),nonnormal = c("time_comp")), "pipe")`
+
+```{r ,include=FALSE, message=FALSE, warning=FALSE}
+df_cal <- read_excel("./data_files/Fruits-Vegetables-kcal.xlsx") 
+df_cal <- df_cal[2:nrow(df_cal),c(1:13)]
+names(df_cal) <- c("record_id","group","fruits_per_day","veg_per_day","fruits_per_week",
+                    "veg_per_week","total_daily_fv","kcal_bl","kcal_1st","kcal_2nd",
+                   "water_bl","water_1st","water_2nd")
+
+df_cal<- df_cal[!(df_cal$record_id %in% c(withdraw,firsec)),] 
+     
+
+fv_7 <- dfr %>% filter(day==7) %>% select(record_id,fruit_veg) %>% 
+  filter(!(record_id %in% c(withdraw,firsec))) %>% mutate(kcal_7=round((fruit_veg/7)*443)) %>%
+  rename(fruit_veg_7=fruit_veg)
+
+fv_14 <- dfr %>% filter(day==14) %>% select(record_id,fruit_veg) %>% 
+  filter(!(record_id %in% c(withdraw,firsec))) %>% mutate(kcal_14=round((fruit_veg/7)*443)) %>%
+  rename(fruit_veg_14=fruit_veg)
+
+df_cal$record_id <- as.factor(df_cal$record_id)
+df_cal$kcal_1st <- as.numeric(df_cal$kcal_1st)
+df_cal$kcal_2nd <- as.numeric(df_cal$kcal_2nd)
+df_cal$kcal_bl <- as.numeric(df_cal$kcal_bl)
+df_cal$fruits_per_day <- as.numeric(df_cal$fruits_per_day)
+df_cal$veg_per_day <- as.numeric(df_cal$veg_per_day)
+df_cal$fruits_per_week <- as.numeric(df_cal$fruits_per_week)
+df_cal$veg_per_week <- as.numeric(df_cal$veg_per_week)
+df_cal$total_daily_fv <- as.numeric(df_cal$total_daily_fv)
+
+df_cal2 <- df_cal %>% left_join(fv_7) %>% left_join(fv_14)
+
+df_cal2 <- df_cal2 %>% filter(kcal_1st!="na") %>% mutate(fv_prop_cal_1st=round((kcal_7/kcal_1st)*100)) %>%
+  mutate(fv_prop_cal_2nd=round((kcal_14/kcal_2nd)*100))
+
+
+
+
+
+df_cal3 <- df_cal2 %>% select(record_id,group,kcal_bl,kcal_1st,kcal_2nd) %>% reshape2::melt() %>%
+  mutate(week=case_when(variable=="kcal_bl" ~1,
+                        variable=="kcal_1st" ~2,
+                        variable=="kcal_2nd"~3)) %>%
+  mutate(phase=case_when(group=="A" & week=="2"~"Morning",
+                         group=="A" & week=="3"~"Evening",
+                         group=="B" & week=="2"~"Evening",
+                         group=="B" & week=="3"~"Morning",
+                         group=="A" & week=="1"~"Baseline",
+                         group=="B" & week=="1"~"Baseline")) %>%
+  rename(kcal=value)
+
+
+df_cal4 <- df_cal2 %>% select(record_id,group,fv_prop_cal_1st, fv_prop_cal_2nd) %>% reshape2::melt() %>%
+  mutate(week=case_when(variable=="fv_prop_cal_1st" ~1,
+                        variable=="fv_prop_cal_2nd" ~2)) %>%
+  mutate(phase=case_when(group=="A" & week=="2"~"Morning",
+                         group=="A" & week=="3"~"Evening",
+                         group=="B" & week=="2"~"Evening",
+                         group=="B" & week=="3"~"Morning")) %>%
+  rename(fruit_veg_prop=value)
+
+kcal_diff <- df_cal2 %>% select(record_id,group,kcal_bl,kcal_1st,kcal_2nd) %>%
+  mutate(kcal1b=kcal_1st-kcal_bl, kcal21=kcal_2nd-kcal_1st,kcal2b=kcal_2nd-kcal_bl) %>%
+  select(record_id,kcal1b,kcal21,kcal2b,group) %>% reshape2::melt() %>%
+  mutate(phase=case_when(group=="A" & variable=="kcal1b"~"Morning",
+                         group=="B" & variable=="kcal1b"~"Evening",
+                         group=="A" & variable=="kcal21"~"Evening",
+                         group=="B" & variable=="kcal21"~"Morning",
+                         group=="A" & variable=="kcal2b"~"Total",
+                         group=="B" & variable=="kcal2b"~"Total")) %>% dplyr::rename(kcal_difference=value)
+
+kcal_diff2 <- kcal_diff %>% filter(phase!="Total")
+
+df_cal <- df_cal %>% mutate(total_weekly_fv=fruits_per_week+veg_per_week)
+
+
+
+cal_descr <- df_cal %>% select(kcal_bl,kcal_1st,kcal_2nd) %>% psych::describe() %>%
+  select(n, mean, sd, median, se, min, max, range)
+
+```
+
+### FFQ descriptives stratified by Group
+
+`r kable(print(CreateTableOne(c("fruits_per_day","veg_per_day","fruits_per_week", "veg_per_week","total_daily_fv","total_weekly_fv","kcal_bl","kcal_1st","kcal_2nd"), data=df_cal, strata=c("group"),,addOverall=T)), "pipe")`
+
+
+### Calories
+
+#### Calories descriptives
+
+`r kable(print(cal_descr), "pipe")`
+
+#### Calories per phase
+
+`r kable(print(CreateTableOne(c("kcal"), data=df_cal3, strata=c("phase") ,addOverall=T)), "pipe")`
+
+#### Calories per group
+
+`r kable(print(CreateTableOne(c("kcal"), data=df_cal3, strata=c("group") ,addOverall=T)), "pipe")`
+
+#### Calories percentage from fruits and vegetables per phase
+
+`r kable(print(CreateTableOne(c("fruit_veg_prop"), data=df_cal4, strata=c("phase") ,addOverall=T)), "pipe")`
+
+#### Calories percentage from fruits and vegetables per group
+
+`r kable(print(CreateTableOne(c("fruit_veg_prop"), data=df_cal4, strata=c("group") ,addOverall=T)), "pipe")`
+
+#### Calories difference per phase
+
+`r kable(print(CreateTableOne(c("kcal_difference"), data=kcal_diff2, strata=c("phase"), testNormal=t.test, argsNormal=list(paired=TRUE))), "pipe")`
+
+
+
+```{r, include=FALSE}
+
+rm(df_cal,df_cal2,df_cal3,df_cal4, cal_descr,fv_14, fv_7, kcal_diff, kcal_diff2)
+#subseting the data
+df_an <- df_anthrop %>% select(c(record_id,weight,weight_2,weight_3,bmi,bmi_2,bmi3,
+                                 waist,waist_2,waist_3,group)) %>% distinct()
+
+#creating the dataset to have the measurement descriptives 
+anthrop <- reshape2::melt(df_an) %>%
+  mutate(week=case_when(variable %in% c("weight","bmi","waist")~1,
+                        variable %in% c("weight_2","bmi_2","waist_2")~2,
+                        variable %in% c("weight_3","bmi3","waist_3")~3),
+         type=case_when(variable %in% c("weight","weight_2","weight_3")~"weight",
+                        variable %in% c("bmi","bmi_2","bmi3")~"bmi",
+                        variable %in% c("waist","waist_2","waist_3")~"waist")) %>%
+  mutate(phase=case_when(group=="A" & week=="2"~"Morning",
+                         group=="A" & week=="3"~"Evening",
+                         group=="B" & week=="2"~"Evening",
+                         group=="B" & week=="3"~"Morning",
+                         group=="A" & week=="1"~"Baseline",
+                         group=="B" & week=="1"~"Baseline"))
+
+wei <- anthrop %>% filter(type=="weight") %>% dplyr::rename(weight=value) %>% filter(!is.na(weight)) #filter only weight data
+bmi <- anthrop %>% filter(type=="bmi") %>% dplyr::rename(bmi=value) %>% filter(!is.na(bmi)) #filter only bmi data
+wai <- anthrop %>% filter(type=="waist") %>% dplyr::rename(waist=value) %>% filter(!is.na(waist)) #filter only waist data
+
+#finding the weight differences in different phases
+wei_diff <- df_an %>% mutate(w1b=weight_2-weight,w2w1=weight_3-weight_2,w2b=weight_3-weight) %>%
+  select(record_id,w1b,w2w1,w2b,group) %>% reshape2::melt() %>%
+  mutate(phase=case_when(group=="A" & variable=="w1b"~"Morning",
+                         group=="B" & variable=="w1b"~"Evening",
+                         group=="A" & variable=="w2w1"~"Evening",
+                         group=="B" & variable=="w2w1"~"Morning",
+                         group=="A" & variable=="w2b"~"Total",
+                         group=="B" & variable=="w2b"~"Total")) %>% dplyr::rename(weight=value)
+#remove total difference and participants who not have all the measurements 
+wei_diff2 <- wei_diff %>% filter(phase!="Total")
+wei_diff_filter <- wei_diff2 %>% filter(is.na(weight)) %>% select(record_id) %>% unique() %>% pull(record_id)
+wei_diff2 <- wei_diff2 %>% filter(!(record_id %in% c(wei_diff_filter,withdraw,firsec)))
+
+#finding the waist differences in different phases
+wai_diff <- df_an %>% mutate(w1b=waist_2-waist,w2w1=waist_3-waist_2,w2b=waist_3-waist) %>%
+  select(record_id,w1b,w2w1,w2b,group) %>% reshape2::melt() %>%
+  mutate(phase=case_when(group=="A" & variable=="w1b"~"Morning",
+                         group=="B" & variable=="w1b"~"Evening",
+                         group=="A" & variable=="w2w1"~"Evening",
+                         group=="B" & variable=="w2w1"~"Morning",
+                         group=="A" & variable=="w2b"~"Total",
+                         group=="B" & variable=="w2b"~"Total")) %>% dplyr::rename(waist=value)
+#remove total difference and participants who not have all the measurements 
+wai_diff2 <- wai_diff %>% filter(phase!="Total")
+wai_diff_filter <- wai_diff2 %>% filter(is.na(waist)) %>% select(record_id) %>% unique() %>% pull(record_id)
+wai_diff2 <- wai_diff2 %>% filter(!(record_id %in% c(wai_diff_filter,withdraw,firsec)))
+
+
+#finding the bmi differences in different phases
+bmi_diff <- df_an %>% mutate(w1b=bmi_2-bmi,w2w1=bmi3-bmi_2,w2b=bmi3-bmi) %>%
+  select(record_id,w1b,w2w1,w2b,group) %>% reshape2::melt() %>%
+  mutate(phase=case_when(group=="A" & variable=="w1b"~"Morning",
+                         group=="B" & variable=="w1b"~"Evening",
+                         group=="A" & variable=="w2w1"~"Evening",
+                         group=="B" & variable=="w2w1"~"Morning",
+                         group=="A" & variable=="w2b"~"Total",
+                         group=="B" & variable=="w2b"~"Total")) %>% dplyr::rename(bmi=value)
+#remove total difference and participants who not have all the measurements 
+bmi_diff2 <- bmi_diff %>% filter(phase!="Total")
+bmi_diff_filter <- bmi_diff2 %>% filter(is.na(bmi)) %>% select(record_id) %>% unique() %>% pull(record_id)
+bmi_diff2 <- bmi_diff2 %>% filter(!(record_id %in% c(bmi_diff_filter,withdraw,firsec)))
+
+rm(df_an, anthrop)
+```
+
+### Measurements descriptives.
+
+`r kable(print(CreateTableOne(c("weight"), data=wei, strata=c("phase") ,addOverall=T)), "pipe")`
+
+`r kable(print(CreateTableOne(c("bmi"), data=bmi, strata=c("phase") ,addOverall=T)), "pipe")`
+
+`r kable(print(CreateTableOne(c("waist"), data=wai, strata=c("phase") ,addOverall=T)), "pipe")`
+
+
+### Measurements differences.
+
+`r kable(print(CreateTableOne(c("weight"), data=wei_diff2, strata=c("phase"), testNormal=t.test, argsNormal=list(paired=TRUE))), "pipe")`
+
+`r kable(print(CreateTableOne(c("bmi"), data=bmi_diff2, strata=c("phase"),testNormal=t.test, argsNormal=list(paired=TRUE))), "pipe")`
+
+`r kable(print(CreateTableOne(c("waist"), data=wai_diff2, strata=c("phase"),testNormal=t.test, argsNormal=list(paired=TRUE))), "pipe")`
+
+```{r, include=FALSE}
+rm(wai,wei,bmi,wai_diff,wei_diff,bmi_diff, bmi_diff2, wai_diff2, wei_diff2)
+
+
+
+# We going to check if participant don't know about pesticide exposure have at least visit one place with high risk of pesticide exposure
+pest <- subset(dataset, pesticides_exposure==3)
+pest <- pest[,102:108] %>% mutate(sumVar = rowSums(.)) #finding the sum of possible places with pesticide exposure
+```
+
+From the participants who answer that the don't know if the exposed to pesticides the `r (length(pest$sumVar>0)/length(pest$sumVar))*100` % of them visited at least one place with pesticide exposure.
+
+```{r, include=FALSE}
+
+dataset <- dataset %>% filter(!(record_id %in% c(firsec,withdraw))) %>% # removing participants 
+  mutate(record_id=factor(record_id)) %>% mutate(pest=ifelse(pesticides_exposure==2,2,1)) #change the index of pesticides
+
+
+pest1 <- dataset %>% filter(week==1) %>% group_by(record_id) %>%
+  summarise(sum=sum(pest==1)) %>% filter(sum>0) #pest exposure for first week
+
+pest2 <- dataset %>% filter(week==2) %>% group_by(record_id) %>%
+  summarise(sum=sum(pest==1)) %>% filter(sum>0) #pest exposure for second week
+
+pest_merged <- merge(pest1,pest2, by="record_id", all=T, suffixes = c("_first_week","_second_week")) %>% na.omit()
+
+pest1_urine <- dataset %>% filter(week==1) %>% filter(day %in% c(1,3,5,7)) %>%
+  group_by(record_id) %>% summarise(sum=sum(pest==1)) %>% filter(sum>0) #pest exposure only for urine sample days for first week
+
+pest2_urine <- dataset %>% filter(week==2) %>% filter(day %in% c(8,10,12,14)) %>%
+  group_by(record_id) %>% summarise(sum=sum(pest==1)) %>% filter(sum>0) #pest exposure only for urine sample days for second week
+
+pest_merged_urine <- merge(pest1_urine,pest2_urine, by="record_id", all=T, suffixes = c("_first_week","_second_week")) %>% na.omit() #pest exposure only for urine sample days
+```
+
+### Mean pesticide exposure for each participant per group type and week.
+
+`r kable(print(CreateTableOne("pest", data=dataset, strata="group" ,addOverall=T)), "pipe")`
+
+`r kable(print(CreateTableOne("pest", data=dataset, strata="week" ,addOverall=T),testNonNormal = wilcox.test , argsNonNormal = list(paired = TRUE), testNormal=t.test, argsNormal=list(paired=TRUE)), "pipe")`
+
+`r kable(print(CreateTableOne("pest", data=dataset, strata="phase" ,addOverall=T),testNonNormal = wilcox.test , argsNonNormal = list(paired = TRUE), testNormal=t.test, argsNormal=list(paired=TRUE)), "pipe")`
+
+### Summary of participants who exposed to pesticides at least one time at first week
+
+`r kable(print(pest1), "pipe")`
+
+### Summary of participants who exposed to pesticides at least one time at second week
+
+`r kable(print(pest2), "pipe")`
+
+### Summary of participants who exposed to pesticides at least one time for both weeks
+
+`r kable(print(pest_merged), "pipe")`
+
+### Summary of participants who exposed to pesticides at least one time for both weeks for urine sample days
+
+`r kable(print(pest_merged_urine), "pipe")`
+
+```{r smoking, include=FALSE}
+rm(pest,pest1,pest2,pest_merged, pest1_urine, pest2_urine, pest_merged_urine, firsec)
+
+#finding the participants who answer that the smoke the day before.
+smok <- dataset %>% group_by(record_id) %>%
+  summarise(days_of_smoking=sum(smoking==1, na.rm=T)) %>%
+  filter(days_of_smoking>0)
+```
+
+### Participants who they smoked at least 1 day
+
+`r kable(print(smok), "pipe")`
+
+```{r number of exercises, include=FALSE}
+exercises <- dataset %>% group_by(record_id) %>%
+  summarise(sum=sum(num_of_exercises, na.rm=T)) #summary of exercises per participant
+
+
+#creating the descriptives table
+exercises_descr <- exercises %>% select(-record_id) %>%
+  data.frame() %>%
+  psych::describe() %>%
+  select(n, mean, sd, median, se, min, max) %>% set_rownames("Number of exercises")
+```
+
+
+### Descriptives for number of exercises through 14 questionnaire days.
+
+`r kable(print(exercises_descr), "pipe")`
+
+### Number of exercises per week for each day
+
+`r kable(print(CreateTableOne("num_of_exercises", data=dataset, strata="week" ,addOverall=T),testNonNormal = wilcox.test , testNormal=t.test, ), "pipe")`
+
+### Number of exercises per group for each day
+
+`r kable(print(CreateTableOne("num_of_exercises", data=dataset, strata="group" ,addOverall=T),testNonNormal = wilcox.test , testNormal=t.test, ), "pipe")`
+
+### Number of exercises per phase for each day
+
+`r kable(print(CreateTableOne("num_of_exercises", data=dataset, strata="phase" ,addOverall=T),testNonNormal = wilcox.test , testNormal=t.test, ), "pipe")`
+
+```{r medicines, include=FALSE}
+
+#summarization of participant who use medicine the day before.
+medicines <- dataset %>% group_by(record_id) %>%
+  summarise(medicine=sum(medicines==1, na.rm=T),
+            no_medicine=sum(medicines==2, na.rm=T)) %>%
+  mutate(med_prop=round(medicine/14,3))
+
+#summarization of participants who use medicine the day before, for urine sample days.
+medicines_urine <- dataset %>% filter(day %in% c(1,3,5,7,8,10,12,14)) %>%
+  group_by(record_id) %>% summarise(medicine=sum(medicines==1, na.rm=T)) %>%
+  mutate(med_prop=medicine/8)
+```
+
+### Medicine usage through study.
+
+`r kable(print(CreateTableOne(c("medicine","med_prop"), data=medicines),nonnormal =c("medicine","med_prop")), "pipe")`
+
+### Medicine usage through study only for urine sample days.
+
+`r kable(print(CreateTableOne(c("medicine","med_prop"), data=medicines_urine),nonnormal =c("medicine","med_prop")), "pipe")`
+
+
+```{r, include=F}
+rm(smok,exercises, exercises_descr,medicines,medicines_urine)
+
+
+sleep_df <- dataset %>% select(record_id,week,phase,day,sleep_time, wake_up, dinner,group) %>%
+  mutate(type=str_sub(sleep_time,-2,-1), # extracting PM or AM for sleep time
+         type2=str_sub(wake_up,-2,-1)) %>% # extracting PM or AM for wake up time
+  #change the type odject of sleep time
+  mutate(sleep_time2=ifelse(type=="PM", as.POSIXct(paste("2013-01-01",sleep_time),
+                                                   format = "%Y-%m-%d %I:%M:%S %p"),
+                            as.POSIXct(paste("2013-01-02",sleep_time),
+                                       format = "%Y-%m-%d %I:%M:%S %p"))) %>%
+  mutate(sleep_time2=as.POSIXct(sleep_time2, origin = "1960-01-01"))%>%
+  mutate(wake_up2=as.POSIXct(paste("2003-01-02",wake_up, format = "%Y-%m-%d %I:%M:%S %p"))) %>%
+  mutate(duration=difftime(wake_up2,sleep_time2,units = "hours")) %>% # calculating sleep duration
+  mutate(duration2=as.numeric(duration)) %>%
+  #correcting the wrong AM/PM by subtracting if the duration is above 14 hours or adding if sleep duration is negative.
+  mutate(duration2=ifelse(duration2>14,duration-12,ifelse(duration<=0,duration+12,duration))) %>% 
+  #creating the dinner time object
+  mutate(dinner2=as.POSIXct(paste("2013-01-02",dinner),format = "%Y-%m-%d %I:%M:%S %p"))
+
+#sleep data for urine sample days only.
+sleep_df_urine <- sleep_df %>% filter(day %in% c(1,3,5,7,8,10,12,14))
+
+#sleep descriptives
+sleep_df_id <- sleep_df %>% group_by(record_id) %>% summarise(mean_sleep_duration=mean(duration2))
+
+#creating the sleep data descriptives
+sleep_descr <- sleep_df_id %>% select(-record_id) %>%
+  data.frame() %>%
+  psych::describe() %>%
+  select(n, mean, sd, median, se, min, max, range) %>% set_rownames("Mean sleep duration")
+```
+
+### Sleep duration for all days per week
+
+`r kable(print(CreateTableOne("duration2", data=sleep_df, strata="week" ,addOverall=T,testNonNormal = wilcox.test , argsNonNormal = list(paired = TRUE), testNormal=t.test, argsNormal=list(paired=TRUE))), "pipe")`
+
+### Sleep duration for all days per phase
+
+`r kable(print(CreateTableOne("duration2", data=sleep_df, strata="phase" ,addOverall=T,testNonNormal = wilcox.test , argsNonNormal = list(paired = TRUE), testNormal=t.test, argsNormal=list(paired=TRUE))), "pipe")`
+
+### Sleep duration for all days per group
+
+`r kable(print(CreateTableOne("duration2", data=sleep_df, strata="group" ,addOverall=T)), "pipe")`
+
+### Descriptives for mean sleep duration for each participant
+
+`r kable(print(sleep_descr), "pipe")`
+
+### Sleep duration for urine sample days per week
+
+`r kable(print(CreateTableOne("duration2", data=sleep_df_urine, strata="week" ,addOverall=T,testNonNormal = wilcox.test , argsNonNormal = list(paired = TRUE), testNormal=t.test, argsNormal=list(paired=TRUE))), "pipe")`
+
+### Sleep duration for urine sample days per phase
+
+`r kable(print(CreateTableOne("duration2", data=sleep_df_urine, strata="phase" ,addOverall=T,testNonNormal = wilcox.test , argsNonNormal = list(paired = TRUE), testNormal=t.test, argsNormal=list(paired=TRUE))),"pipe")`
+
+### Sleep duration for urine sample days per group
+
+`r kable(print(CreateTableOne("duration2", data=sleep_df_urine, strata="group" ,addOverall=T)), "pipe")`
+
+### Sleep duration for each urine sample day
+
+`r kable(print(CreateTableOne("duration2", data=sleep_df_urine, strata="day" ,addOverall=T)), "pipe")`
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+sleep_df$urine <- ifelse(sleep_df$day %in% c(1,3,5,7,8,10,12,14),"Urine sample day", "Not urine sample day ") 
+
+ggplot(sleep_df_urine, aes(x=as.factor(day),y=duration2)) + geom_boxplot(fill=I("Red")) +
+  theme_minimal() + xlab("day") + ylab("Sleep duration")
+  
+
+ggplot(sleep_df, aes(x=week, y=wake_up2, fill=week)) + geom_boxplot() + ylab("Wake up time") +
+  theme_minimal() + ggtitle("Boxplot of wake up time per week")
+
+ggplot(sleep_df, aes(x=phase, y=wake_up2, fill=phase)) + geom_boxplot() + ylab("Wake up time") +
+  theme_minimal() + ggtitle("Boxplot of wake up time per phase")
+
+ggplot(sleep_df, aes(x=as.factor(day), y=wake_up2, fill=urine)) + geom_boxplot(position = position_dodge(width = 0.9)) +
+  ylab("Wake up time") + theme_minimal() + xlab("Day/Questionnaire")
+
+ggplot(sleep_df, aes(x=as.factor(day), y=wake_up2, fill=urine)) + geom_boxplot() +
+  ylab("Wake up time") +  facet_grid(~urine) + xlab("Day/Questionnaire") + theme(legend.position='none') 
+
+```
+
+
+```{r, include=FALSE}
+rm(sleep_descr, sleep_df, sleep_df_id, sleep_df_urine)
+
+fluid <- subset(dataset, select=c(record_id,water:vodka,week:phase,day)) %>%
+  select(-tea_consumption,-soft_drink_consumption,-coffee_consumption,-alcohol_consumption) 
+
+fluid[is.na(fluid)] <- 0 #replace NA with 0 consumption
+
+#calculating the water consumption in mL
+fluid <- fluid %>% mutate(water2=case_when(water==1~250,
+                                           water==2~500,
+                                           water==3~875,
+                                           water==4~1375,
+                                           water==5~1875,
+                                           water==6~2375,
+                                           water==7~2875,
+                                           water==8~3000))
+
+#calculating tea consumption in mL
+fluid <- fluid %>% mutate(tea2=case_when(tea==1~0.5,
+                                           tea==2~1,
+                                           tea==3~1.5,
+                                           tea==4~2,
+                                           tea==5~2.5,
+                                           tea==6~3,
+                                           tea==7~3.5,
+                                           tea==8~4,
+                                         tea==0~0)) %>%
+  mutate(tea2=tea2*250)
+
+#creating a function to calculate soft drink consumption
+soft_drink <- function(x){
+  x=case_when(x==0 ~ 0,
+              x==1 ~ 0.5,
+              x==2 ~ 1,
+              x==3 ~ 1.5,
+              x==4 ~ 2,
+              x==5 ~ 2.5,
+              x==6 ~ 3,
+              x==7 ~ 3.5,
+              x==8 ~ 4)
+  return(x)
+}
+
+
+fluid <- fluid %>% mutate(cola_sugar=soft_drink(cola_sugar)*250,
+                          cola_no_sugar=soft_drink(cola_no_sugar)*250,
+                          other_sugar=soft_drink(other_sugar)*250,
+                          other_no_sugar=soft_drink(other_no_sugar)*250) %>%
+  mutate(soft_drink2=cola_sugar+cola_no_sugar+other_sugar+other_no_sugar) %>%
+  mutate(filtered_coffee=soft_drink(filtered_coffee)*240,
+         instant_coffee=soft_drink(instant_coffee)*240,
+         espresso_coffee=soft_drink(espresso_coffee)*20,
+         freddo_coffee=soft_drink(freddo_coffee)*50,
+         cyprus_coffee=soft_drink(cyprus_coffee)*30) %>%
+  mutate(coffee2=filtered_coffee+instant_coffee+espresso_coffee+freddo_coffee + cyprus_coffee) %>%
+  mutate(beer <- soft_drink(beer)* 360,
+         malt <- soft_drink(malt) * 240,
+         wine <- soft_drink(wine) * 150,
+         vodka <- soft_drink(vodka) * 45) %>%
+  mutate(alcohol2=beer+malt+wine+vodka) %>%
+  mutate(total=water2+tea2+soft_drink2+coffee2+alcohol2)
+  
+         
+
+#mean consumption in mL
+fluid_sum <- fluid %>% group_by(record_id) %>% summarise(water=mean(water2), tea=mean(tea2),
+                                                         soft_drink=mean(soft_drink2),
+                                                         coffee=mean(coffee2),alcohol=mean(alcohol2),
+                                                         total=mean(total))
+
+#fluids for urine sample days
+fluid_urine <- fluid %>% filter(day %in% c(1,3,5,7,8,10,12,14))
+
+#fluid consumption descriptives.
+fluid_descr <- fluid_sum %>% select(-record_id) %>% psych::describe() %>%
+  select(n, mean, sd, median, se, min, max, range)
+
+
+```
+
+### Liquid consumption per phase,week and group
+
+`r kable(print(CreateTableOne(c("water2","tea2","soft_drink2","coffee2","alcohol2","total"), data=fluid, strata="phase" ,addOverall=T,testNonNormal = wilcox.test , argsNonNormal = list(paired = TRUE), testNormal=t.test, argsNormal=list(paired=TRUE))), "pipe")`
+
+`r kable(print(CreateTableOne(c("water2","tea2","soft_drink2","coffee2","alcohol2","total"), data=fluid, strata="week" ,addOverall=T,testNonNormal = wilcox.test , argsNonNormal = list(paired = TRUE), testNormal=t.test, argsNormal=list(paired=TRUE))), "pipe")`
+
+`r kable(print(CreateTableOne(c("water2","tea2","soft_drink2","coffee2","alcohol2","total"), data=fluid, strata="group" ,addOverall=T)), "pipe")`
+
+### Liquid consumption for urine sample days per phase,week and group
+
+`r kable(print(CreateTableOne(c("water2","tea2","soft_drink2","coffee2","alcohol2","total"), data=fluid_urine, strata="phase" ,addOverall=T,testNonNormal = wilcox.test , argsNonNormal = list(paired = TRUE), testNormal=t.test, argsNormal=list(paired=TRUE))), "pipe")`
+
+`r kable(print(CreateTableOne(c("water2","tea2","soft_drink2","coffee2","alcohol2","total"), data=fluid_urine, strata="week" ,addOverall=T,testNonNormal = wilcox.test , argsNonNormal = list(paired = TRUE), testNormal=t.test, argsNormal=list(paired=TRUE))), "pipe")`
+
+`r kable(print(CreateTableOne(c("water2","tea2","soft_drink2","coffee2","alcohol2","total"), data=fluid_urine, strata="group" ,addOverall=T)), "pipe")`
+
+### Liquid consumption descriptives.
+
+`r kable(fluid_descr, "pipe")`
